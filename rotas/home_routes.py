@@ -2,7 +2,9 @@ from flask import Blueprint, jsonify, render_template, request, abort, g, sessio
 from functools import wraps
 from datetime import datetime, timedelta
 from decimal import Decimal
+import os
 from io import BytesIO
+import json
 import unicodedata
 import subprocess
 import sys
@@ -40,29 +42,24 @@ from services.ped_runner import (
     INPUT_DIR as PED_UPLOAD_DIR,
     OUTPUT_DIR as PED_OUTPUT_DIR,
 )
-from services.emp_runner import (
-    run_emp,
-    INPUT_DIR as EMP_UPLOAD_DIR,
-    OUTPUT_DIR as EMP_OUTPUT_DIR,
-    move_existing_to_tmp as move_emp_existing_to_tmp,
-)
 from services.est_emp_runner import (
     run_est_emp,
     INPUT_DIR as EST_EMP_UPLOAD_DIR,
     OUTPUT_DIR as EST_EMP_OUTPUT_DIR,
     move_existing_to_tmp as move_est_emp_existing_to_tmp,
 )
-from services.nob_runner import (
-    run_nob,
-    INPUT_DIR as NOB_UPLOAD_DIR,
-    OUTPUT_DIR as NOB_OUTPUT_DIR,
-    move_existing_to_tmp as move_nob_existing_to_tmp,
-)
 from services.job_status import read_status, set_cancel_flag, update_status_fields, write_status
 from pathlib import Path
 from sqlalchemy import text, func
 
 home_bp = Blueprint("home", __name__)
+
+EMP_UPLOAD_DIR = Path("upload/emp")
+EMP_OUTPUT_DIR = Path("outputs/td_emp")
+NOB_UPLOAD_DIR = Path("upload/nob")
+NOB_OUTPUT_DIR = Path("outputs/td_nob")
+NODE_RUNNER = Path(__file__).resolve().parents[1] / "node_runners" / "run.js"
+NODE_EXE = os.getenv("NODE_EXE", "node")
 
 
 def _find_upload_path(base_dir: Path, stored_filename: str) -> Path | None:
@@ -79,6 +76,49 @@ def _find_upload_path(base_dir: Path, stored_filename: str) -> Path | None:
     return matches[0] if matches else None
 
 
+def _run_node(kind: str, file_path: Path, user_email: str, data_arquivo, upload_id: int) -> dict:
+    args = [
+        NODE_EXE,
+        str(NODE_RUNNER),
+        "--kind",
+        kind,
+        "--file",
+        str(file_path),
+        "--upload-id",
+        str(upload_id),
+        "--user-email",
+        user_email or "desconhecido",
+    ]
+    if data_arquivo:
+        try:
+            args.extend(["--data-arquivo", data_arquivo.isoformat()])
+        except Exception:
+            args.extend(["--data-arquivo", str(data_arquivo)])
+    proc = subprocess.run(args, capture_output=True, text=True, cwd=str(NODE_RUNNER.parent))
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(f"Node runner falhou: {err or 'erro desconhecido'}")
+    raw = (proc.stdout or "").strip()
+    try:
+        payload = json.loads(raw) if raw else {}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Resposta invalida do Node: {exc}") from exc
+    if not payload.get("ok"):
+        raise RuntimeError(f"Node runner falhou: {payload.get('error')}")
+    return payload
+
+
+def _move_existing_to_tmp(base_dir: Path) -> None:
+    tmp = base_dir / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    for f in base_dir.glob("*.xlsx"):
+        dest = tmp / f"{f.stem}_{datetime.now().strftime('%Y%m%d%H%M%S')}{f.suffix}"
+        try:
+            f.rename(dest)
+        except OSError:
+            pass
+
+
 def _next_pk(model) -> int:
     max_id = db.session.query(func.max(model.id)).scalar() or 0
     return int(max_id) + 1
@@ -88,18 +128,18 @@ def _process_emp_upload(upload_id: int) -> None:
     registro = db.session.get(EmpUpload, upload_id)
     if not registro:
         raise RuntimeError(f"Upload EMP nao encontrado: {upload_id}")
-    file_path = EMP_UPLOAD_DIR / registro.stored_filename
-    if not file_path.exists():
-        raise RuntimeError(f"Arquivo EMP nao encontrado: {file_path}")
-    total, output_path = run_emp(file_path, registro.data_arquivo, registro.user_email, registro.id)
-    registro.output_filename = str(output_path.name)
+    file_path = _find_upload_path(EMP_UPLOAD_DIR, registro.stored_filename)
+    if not file_path:
+        raise RuntimeError(f"Arquivo EMP nao encontrado: {EMP_UPLOAD_DIR / registro.stored_filename}")
+    payload = _run_node("emp", file_path, registro.user_email, registro.data_arquivo, registro.id)
+    registro.output_filename = str(payload.get("output_filename") or "")
     db.session.commit()
     write_status(
         "emp",
         upload_id,
         "processamento finalizado",
-        f"Processado com sucesso. Registros: {total}.",
-        output_path.name,
+        f"Processado com sucesso. Registros: {payload.get('total')}.",
+        payload.get("output_filename"),
         progress=100,
     )
 
@@ -108,18 +148,18 @@ def _process_nob_upload(upload_id: int) -> None:
     registro = db.session.get(NobUpload, upload_id)
     if not registro:
         raise RuntimeError(f"Upload NOB nao encontrado: {upload_id}")
-    file_path = NOB_UPLOAD_DIR / registro.stored_filename
-    if not file_path.exists():
-        raise RuntimeError(f"Arquivo NOB nao encontrado: {file_path}")
-    total, output_path = run_nob(file_path, registro.data_arquivo, registro.user_email, registro.id)
-    registro.output_filename = str(output_path.name)
+    file_path = _find_upload_path(NOB_UPLOAD_DIR, registro.stored_filename)
+    if not file_path:
+        raise RuntimeError(f"Arquivo NOB nao encontrado: {NOB_UPLOAD_DIR / registro.stored_filename}")
+    payload = _run_node("nob", file_path, registro.user_email, registro.data_arquivo, registro.id)
+    registro.output_filename = str(payload.get("output_filename") or "")
     db.session.commit()
     write_status(
         "nob",
         upload_id,
         "processamento finalizado",
-        f"Processado com sucesso. Registros: {total}.",
-        output_path.name,
+        f"Processado com sucesso. Registros: {payload.get('total')}.",
+        payload.get("output_filename"),
         progress=100,
     )
 
@@ -1570,7 +1610,7 @@ def api_emp_upload():
 
     try:
         EMP_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        move_emp_existing_to_tmp(EMP_UPLOAD_DIR)
+        _move_existing_to_tmp(EMP_UPLOAD_DIR)
         stored_name = f"emp_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
         save_path = EMP_UPLOAD_DIR / stored_name
         arquivo.save(save_path)
@@ -1723,7 +1763,7 @@ def api_nob_upload():
 
     try:
         NOB_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        move_nob_existing_to_tmp(NOB_UPLOAD_DIR)
+        _move_existing_to_tmp(NOB_UPLOAD_DIR)
         stored_name = f"nob_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
         save_path = NOB_UPLOAD_DIR / stored_name
         arquivo.save(save_path)

@@ -813,6 +813,7 @@ def api_dotacao_create():
         "adj_id": adj_raw,
         "elemento": elemento_raw,
         "valor_dotacao": valor_raw,
+        "justificativa_historico": justificativa,
     }
     missing = [k for k, v in required.items() if not v]
     if missing:
@@ -903,57 +904,40 @@ def api_dotacao_saldo():
     iduso = (request.args.get("iduso") or "").strip()
     chave_planejamento = (request.args.get("chave_planejamento") or "").strip()
 
-    required = [
-        exercicio,
-        programa,
-        acao_paoe,
-        produto,
-        ug,
-        uo,
-        regiao,
-        subacao_entrega,
-        etapa,
-        fonte,
-        iduso,
-        chave_planejamento,
-    ]
-    if any(not v for v in required):
+    if not exercicio or not chave_planejamento:
         return jsonify({"saldo": 0})
 
-    plan21_query = (
-        db.session.query(Plan21Nger.valor_atual)
-        .filter(
-            Plan21Nger.ativo == True,  # noqa: E712
-            Plan21Nger.exercicio == exercicio,
-            Plan21Nger.programa == programa,
-            Plan21Nger.acao_paoe == acao_paoe,
-            Plan21Nger.produto == produto,
-            Plan21Nger.ug == ug,
-            Plan21Nger.uo == uo,
-            Plan21Nger.regiao == regiao,
-            Plan21Nger.subacao_entrega == subacao_entrega,
-            Plan21Nger.etapa == etapa,
-            Plan21Nger.fonte == fonte,
-            Plan21Nger.idu == iduso,
-        )
-    )
+    plan21_filters = [Plan21Nger.ativo == True]  # noqa: E712
+    if exercicio:
+        plan21_filters.append(Plan21Nger.exercicio == exercicio)
+    if programa:
+        plan21_filters.append(Plan21Nger.programa == programa)
+    if acao_paoe:
+        plan21_filters.append(Plan21Nger.acao_paoe == acao_paoe)
+    if produto:
+        plan21_filters.append(Plan21Nger.produto == produto)
+    if ug:
+        plan21_filters.append(Plan21Nger.ug == ug)
+    if uo:
+        plan21_filters.append(Plan21Nger.uo == uo)
+    if regiao:
+        plan21_filters.append(Plan21Nger.regiao == regiao)
+    if subacao_entrega:
+        plan21_filters.append(Plan21Nger.subacao_entrega == subacao_entrega)
+    if etapa:
+        plan21_filters.append(Plan21Nger.etapa == etapa)
+    if fonte:
+        plan21_filters.append(Plan21Nger.fonte == fonte)
+    if iduso:
+        plan21_filters.append(Plan21Nger.idu == iduso)
+    if chave_planejamento:
+        plan21_filters.append(Plan21Nger.chave_planejamento == chave_planejamento)
+
+    plan21_query = db.session.query(Plan21Nger.valor_atual).filter(*plan21_filters)
     plan21_count = plan21_query.count()
     valor_atual = (
         db.session.query(func.coalesce(func.sum(Plan21Nger.valor_atual), 0))
-        .filter(
-            Plan21Nger.ativo == True,  # noqa: E712
-            Plan21Nger.exercicio == exercicio,
-            Plan21Nger.programa == programa,
-            Plan21Nger.acao_paoe == acao_paoe,
-            Plan21Nger.produto == produto,
-            Plan21Nger.ug == ug,
-            Plan21Nger.uo == uo,
-            Plan21Nger.regiao == regiao,
-            Plan21Nger.subacao_entrega == subacao_entrega,
-            Plan21Nger.etapa == etapa,
-            Plan21Nger.fonte == fonte,
-            Plan21Nger.idu == iduso,
-        )
+        .filter(*plan21_filters)
         .scalar()
     )
     valor_atual = _dec_or_zero(valor_atual)
@@ -962,15 +946,16 @@ def api_dotacao_saldo():
         db.session.query(func.coalesce(func.sum(Dotacao.valor_dotacao), 0))
         .filter(
             Dotacao.ativo == True,  # noqa: E712
-            Dotacao.exercicio == exercicio,
-            Dotacao.programa == programa,
-            Dotacao.acao_paoe == acao_paoe,
-            Dotacao.produto == produto,
-            Dotacao.ug == ug,
-            Dotacao.uo == uo,
-            Dotacao.regiao == regiao,
-            Dotacao.fonte == fonte,
-            Dotacao.iduso == iduso,
+            *( [Dotacao.exercicio == exercicio] if exercicio else [] ),
+            *( [Dotacao.programa == programa] if programa else [] ),
+            *( [Dotacao.acao_paoe == acao_paoe] if acao_paoe else [] ),
+            *( [Dotacao.produto == produto] if produto else [] ),
+            *( [Dotacao.ug == ug] if ug else [] ),
+            *( [Dotacao.uo == uo] if uo else [] ),
+            *( [Dotacao.regiao == regiao] if regiao else [] ),
+            *( [Dotacao.fonte == fonte] if fonte else [] ),
+            *( [Dotacao.iduso == iduso] if iduso else [] ),
+            *( [Dotacao.chave_planejamento == chave_planejamento] if chave_planejamento else [] ),
         )
         .scalar()
     )
@@ -987,17 +972,28 @@ def api_dotacao_saldo():
     chave_field = "chave_planejamento" if exercicio_int and exercicio_int <= 2025 else "chave"
     chave_norm = _normalize_chave(chave_planejamento)
 
-    ped_base = [
-        PedRegistro.ativo == True,  # noqa: E712
-        PedRegistro.exercicio == exercicio,
-        PedRegistro.programa_governo == programa_key,
-        PedRegistro.paoe == acao_paoe_key,
-        PedRegistro.fonte == fonte,
-        PedRegistro.iduso == iduso,
-        PedRegistro.uo == uo_norm,
-        PedRegistro.subfuncao_ug.like(f"%.{ug_norm}"),
-        PedRegistro.regiao == regiao,
-    ]
+    ped_base = [PedRegistro.ativo == True]  # noqa: E712
+    if exercicio:
+        ped_base.append(PedRegistro.exercicio == exercicio)
+    if programa_key:
+        ped_base.append(PedRegistro.programa_governo == programa_key)
+    if acao_paoe_key:
+        ped_base.append(PedRegistro.paoe == acao_paoe_key)
+    if fonte:
+        ped_base.append(PedRegistro.fonte == fonte)
+    if iduso:
+        ped_base.append(PedRegistro.iduso == iduso)
+    if uo_norm:
+        ped_base.append(PedRegistro.uo == uo_norm)
+    if ug_norm:
+        ped_base.append(PedRegistro.subfuncao_ug.like(f"%.{ug_norm}"))
+    if regiao:
+        ped_base.append(PedRegistro.regiao == regiao)
+    if chave_planejamento:
+        if chave_field == "chave_planejamento":
+            ped_base.append(PedRegistro.chave_planejamento == chave_planejamento)
+        else:
+            ped_base.append(PedRegistro.chave == chave_planejamento)
     ped_rows = (
         PedRegistro.query.with_entities(
             PedRegistro.valor_ped, PedRegistro.chave_planejamento, PedRegistro.chave
@@ -1013,17 +1009,28 @@ def api_dotacao_saldo():
     valor_ped = sum((_dec_or_zero(r.valor_ped) for r in ped_filtered), Decimal("0"))
     ped_count = len(ped_filtered)
 
-    emp_base = [
-        EmpRegistro.ativo == True,  # noqa: E712
-        EmpRegistro.exercicio == exercicio,
-        EmpRegistro.programa_governo == programa_key,
-        EmpRegistro.paoe == acao_paoe_key,
-        EmpRegistro.fonte == fonte,
-        EmpRegistro.iduso == iduso,
-        EmpRegistro.uo == uo_norm,
-        EmpRegistro.subfuncao_ug.like(f"%.{ug_norm}"),
-        EmpRegistro.regiao == regiao,
-    ]
+    emp_base = [EmpRegistro.ativo == True]  # noqa: E712
+    if exercicio:
+        emp_base.append(EmpRegistro.exercicio == exercicio)
+    if programa_key:
+        emp_base.append(EmpRegistro.programa_governo == programa_key)
+    if acao_paoe_key:
+        emp_base.append(EmpRegistro.paoe == acao_paoe_key)
+    if fonte:
+        emp_base.append(EmpRegistro.fonte == fonte)
+    if iduso:
+        emp_base.append(EmpRegistro.iduso == iduso)
+    if uo_norm:
+        emp_base.append(EmpRegistro.uo == uo_norm)
+    if ug_norm:
+        emp_base.append(EmpRegistro.subfuncao_ug.like(f"%.{ug_norm}"))
+    if regiao:
+        emp_base.append(EmpRegistro.regiao == regiao)
+    if chave_planejamento:
+        if chave_field == "chave_planejamento":
+            emp_base.append(EmpRegistro.chave_planejamento == chave_planejamento)
+        else:
+            emp_base.append(EmpRegistro.chave == chave_planejamento)
     emp_rows = (
         EmpRegistro.query.with_entities(
             EmpRegistro.numero_emp, EmpRegistro.chave_planejamento, EmpRegistro.chave
@@ -1064,15 +1071,16 @@ def api_dotacao_saldo():
                 db.session.query(func.count(Dotacao.id))
                 .filter(
                     Dotacao.ativo == True,  # noqa: E712
-                    Dotacao.exercicio == exercicio,
-                    Dotacao.programa == programa,
-                    Dotacao.acao_paoe == acao_paoe,
-                    Dotacao.produto == produto,
-                    Dotacao.ug == ug,
-                    Dotacao.uo == uo,
-                    Dotacao.regiao == regiao,
-                    Dotacao.fonte == fonte,
-                    Dotacao.iduso == iduso,
+                    *( [Dotacao.exercicio == exercicio] if exercicio else [] ),
+                    *( [Dotacao.programa == programa] if programa else [] ),
+                    *( [Dotacao.acao_paoe == acao_paoe] if acao_paoe else [] ),
+                    *( [Dotacao.produto == produto] if produto else [] ),
+                    *( [Dotacao.ug == ug] if ug else [] ),
+                    *( [Dotacao.uo == uo] if uo else [] ),
+                    *( [Dotacao.regiao == regiao] if regiao else [] ),
+                    *( [Dotacao.fonte == fonte] if fonte else [] ),
+                    *( [Dotacao.iduso == iduso] if iduso else [] ),
+                    *( [Dotacao.chave_planejamento == chave_planejamento] if chave_planejamento else [] ),
                 )
                 .scalar()
                 or 0

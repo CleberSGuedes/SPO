@@ -152,6 +152,10 @@
 
     form.addEventListener("submit", async (ev) => {
       ev.preventDefault();
+      if (!form.checkValidity()) {
+        form.reportValidity();
+        return;
+      }
       msg.textContent = "Salvando...";
       msg.classList.remove("text-error");
       const data = Object.fromEntries(new FormData(form));
@@ -1792,19 +1796,7 @@
     const loadSaldo = async () => {
       if (!saldoInput) return;
       const params = currentFilters();
-      const requiredKeys = [
-        "exercicio",
-        "programa",
-        "acao_paoe",
-        "produto",
-        "ug",
-        "uo",
-        "regiao",
-        "subacao_entrega",
-        "etapa",
-        "fonte",
-        "iduso",
-      ];
+      const requiredKeys = ["exercicio", "chave_planejamento"];
       const missing = requiredKeys.some((k) => !params[k]);
       if (missing) {
         saldoInput.value = "";
